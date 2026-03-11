@@ -1,0 +1,6 @@
+// Application icon (Explorer .exe icon and system tray)
+#define IDI_APPICON 1
+#define IDI_APPICON_DISABLED 2
+
+IDI_APPICON ICON "Switchy.ico"
+IDI_APPICON_DISABLED ICON "Switchy_gray.ico"
