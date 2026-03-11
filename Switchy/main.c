@@ -21,7 +21,8 @@ HHOOK hHook;
 BOOL enabled = TRUE;
 BOOL keystrokeCapsProcessed = FALSE;
 BOOL keystrokeShiftProcessed = FALSE;
-BOOL winPressed = FALSE;
+BOOL capsUsedForToggle = FALSE;
+BOOL pendingCapsReset = FALSE;
 
 Settings settings = {
 	.popup = FALSE
@@ -30,13 +31,9 @@ Settings settings = {
 
 int main(int argc, char** argv)
 {
-	if (argc > 1 && strcmp(argv[1], "nopopup") == 0)
+	if (argc > 1 && strcmp(argv[1], "popup") == 0 && GetOSVersion() >= 10)
 	{
-		settings.popup = FALSE;
-	}
-	else
-	{
-		settings.popup = GetOSVersion() >= 10;
+		settings.popup = TRUE;
 	}
 #if _DEBUG
 	printf("Pop-up is %s\n", settings.popup ? "enabled" : "disabled");
@@ -128,73 +125,95 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam)
 #endif // _DEBUG
 		if (key->vkCode == VK_CAPITAL)
 		{
-			if (wParam == WM_SYSKEYDOWN && !keystrokeCapsProcessed)
+			BOOL isAltHeld = (wParam == WM_SYSKEYDOWN);
+			BOOL isCtrlHeld = (wParam == WM_KEYDOWN && (GetAsyncKeyState(VK_LCONTROL) & 0x8000));
+
+			// Alt+Caps or LCtrl+Caps: toggle Switchy enable/disable
+			if ((isAltHeld || isCtrlHeld) && !keystrokeCapsProcessed)
 			{
 				keystrokeCapsProcessed = TRUE;
+				capsUsedForToggle = TRUE;
 				enabled = !enabled;
+
+				// Reset state on re-enable, defer CapsLock reset to keyup
+				if (enabled)
+				{
+					keystrokeShiftProcessed = FALSE;
+					pendingCapsReset = TRUE;
+				}
 #if _DEBUG
 				printf("Switchy has been %s\n", enabled ? "enabled" : "disabled");
 #endif // _DEBUG
 				return 1;
 			}
 
+			// Caps released
 			if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP)
 			{
 				keystrokeCapsProcessed = FALSE;
 
-				if (winPressed)
+				if (capsUsedForToggle)
 				{
-					winPressed = FALSE;
-					ReleaseKey(VK_LWIN);
-				}
+					// Don't switch layout after enable/disable toggle
+					capsUsedForToggle = FALSE;
 
-				if (enabled && !settings.popup)
+					// Force CapsLock OFF on re-enable (deferred from keydown)
+					if (pendingCapsReset)
+					{
+						pendingCapsReset = FALSE;
+						if (GetKeyState(VK_CAPITAL) & 1)
+						{
+							ToggleCapsLockState();
+						}
+					}
+				}
+				else if (enabled)
 				{
 					if (!keystrokeShiftProcessed)
 					{
-						PressKey(VK_MENU);
-						PressKey(VK_LSHIFT);
-						ReleaseKey(VK_MENU);
-						ReleaseKey(VK_LSHIFT);
-					}
-					else
-					{
-						keystrokeShiftProcessed = FALSE;
+						// Caps alone: switch layout
+						if (settings.popup)
+						{
+							PressKey(VK_LWIN);
+							PressKey(VK_SPACE);
+							ReleaseKey(VK_SPACE);
+							ReleaseKey(VK_LWIN);
+						}
+						else
+						{
+							PressKey(VK_MENU);
+							PressKey(VK_LSHIFT);
+							ReleaseKey(VK_MENU);
+							ReleaseKey(VK_LSHIFT);
+						}
 					}
 				}
+
+				keystrokeShiftProcessed = FALSE;
 			}
 
+			// When disabled, pass through CapsLock normally
 			if (!enabled)
 			{
 				return CallNextHookEx(hHook, nCode, wParam, lParam);
 			}
 
+			// Caps pressed (normal, no Alt/Ctrl)
 			if (wParam == WM_KEYDOWN && !keystrokeCapsProcessed)
 			{
 				keystrokeCapsProcessed = TRUE;
 
-				if (keystrokeShiftProcessed == TRUE)
+				if (keystrokeShiftProcessed)
 				{
 					ToggleCapsLockState();
-					return 1;
-				}
-				else
-				{
-					if (settings.popup)
-					{
-						PressKey(VK_LWIN);
-						PressKey(VK_SPACE);
-						ReleaseKey(VK_SPACE);
-						winPressed = TRUE;
-					}
 				}
 			}
+
 			return 1;
 		}
 
-		else if (key->vkCode == VK_LSHIFT)
+		else if (key->vkCode == VK_LSHIFT || key->vkCode == VK_RSHIFT)
 		{
-
 			if ((wParam == WM_KEYUP || wParam == WM_SYSKEYUP) && !keystrokeCapsProcessed)
 			{
 				keystrokeShiftProcessed = FALSE;
@@ -209,20 +228,12 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam)
 			{
 				keystrokeShiftProcessed = TRUE;
 
-				if (keystrokeCapsProcessed == TRUE)
+				if (keystrokeCapsProcessed)
 				{
 					ToggleCapsLockState();
-					if (settings.popup)
-					{
-						PressKey(VK_LWIN);
-						PressKey(VK_SPACE);
-						ReleaseKey(VK_SPACE);
-						winPressed = TRUE;
-					}
-
-					return 0;
 				}
 			}
+
 			return 0;
 		}
 	}
