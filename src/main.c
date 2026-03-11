@@ -50,7 +50,7 @@ void LoadOverlaySettings(void);
 void SaveOverlaySettings(void);
 void RestartApplication(void);
 BOOL IsRunAtStartup(void);
-void SetRunAtStartup(BOOL enable);
+BOOL SetRunAtStartup(BOOL enable);
 void GetOverlayDimensions(int sizeIndex, int* width, int* height);
 HWND CreateOverlayWindow(HINSTANCE hInstance);
 void OverlaySetVisible(BOOL show);
@@ -336,14 +336,33 @@ void SaveOverlaySettings(void)
 #define TASK_NAME "Switchy"
 BOOL IsRunAtStartup(void)
 {
-	/* Check if scheduled task exists by looking for its file in System32\Tasks */
-	char path[MAX_PATH];
-	GetSystemDirectoryA(path, MAX_PATH);
-	strcat_s(path, sizeof(path), "\\Tasks\\" TASK_NAME);
-	return (GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES);
+	/* Query Task Scheduler directly via schtasks /query */
+	char params[256];
+	sprintf_s(params, sizeof(params),
+		"/query /tn \"" TASK_NAME "\" /fo LIST");
+
+	STARTUPINFOA si = { sizeof(si) };
+	PROCESS_INFORMATION pi = { 0 };
+	si.dwFlags = STARTF_USESHOWWINDOW;
+	si.wShowWindow = SW_HIDE;
+
+	char cmdLine[512];
+	sprintf_s(cmdLine, sizeof(cmdLine), "schtasks.exe %s", params);
+
+	if (!CreateProcessA(NULL, cmdLine, NULL, NULL, FALSE,
+		CREATE_NO_WINDOW, NULL, NULL, &si, &pi))
+		return FALSE;
+
+	WaitForSingleObject(pi.hProcess, 5000);
+	DWORD exitCode = 1;
+	GetExitCodeProcess(pi.hProcess, &exitCode);
+	CloseHandle(pi.hProcess);
+	CloseHandle(pi.hThread);
+
+	return (exitCode == 0);
 }
 
-void SetRunAtStartup(BOOL enable)
+BOOL SetRunAtStartup(BOOL enable)
 {
 	char params[MAX_PATH + 384];
 	if (enable)
@@ -354,15 +373,15 @@ void SetRunAtStartup(BOOL enable)
 		GetModuleFileNameA(NULL, exePath, MAX_PATH);
 		if (!GetUserNameA(username, &unameLen))
 			username[0] = '\0';
-		/* /ru = run as this user at logon (so task actually runs when they log on)
-		   /rl highest = run with highest privileges (Admin), /f = overwrite if exists */
+		/* /ru = run as this user at logon, /rl limited = run without elevation
+		   /f = overwrite if exists */
 		if (username[0])
 			sprintf_s(params, sizeof(params),
-				"/create /tn \"" TASK_NAME "\" /tr \"\\\"%s\\\"\" /sc onlogon /ru \"%s\" /rl highest /f",
+				"/create /tn \"" TASK_NAME "\" /tr \"\\\"%s\\\"\" /sc onlogon /ru \"%s\" /rl limited /f",
 				exePath, username);
 		else
 			sprintf_s(params, sizeof(params),
-				"/create /tn \"" TASK_NAME "\" /tr \"\\\"%s\\\"\" /sc onlogon /rl highest /f",
+				"/create /tn \"" TASK_NAME "\" /tr \"\\\"%s\\\"\" /sc onlogon /rl limited /f",
 				exePath);
 	}
 	else
@@ -377,11 +396,15 @@ void SetRunAtStartup(BOOL enable)
 	sei.lpParameters = params;
 	sei.nShow = SW_HIDE;
 	sei.fMask = SEE_MASK_NOCLOSEPROCESS;
-	if (ShellExecuteExA(&sei) && sei.hProcess)
-	{
-		WaitForSingleObject(sei.hProcess, 5000);
-		CloseHandle(sei.hProcess);
-	}
+	if (!ShellExecuteExA(&sei) || !sei.hProcess)
+		return FALSE;
+
+	WaitForSingleObject(sei.hProcess, 10000);
+	DWORD exitCode = 1;
+	GetExitCodeProcess(sei.hProcess, &exitCode);
+	CloseHandle(sei.hProcess);
+
+	return (exitCode == 0);
 }
 
 void RestartApplication(void)

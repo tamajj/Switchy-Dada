@@ -15,18 +15,18 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="main.c">
+    <ClCompile Include="src\main.c">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ResourceCompile Include="Switchy.rc">
+    <ResourceCompile Include="res\Switchy.rc">
       <Filter>Resource Files</Filter>
     </ResourceCompile>
-    <None Include="Switchy.ico">
+    <None Include="res\Switchy.ico">
       <Filter>Resource Files</Filter>
     </None>
-    <None Include="Switchy_gray.ico">
+    <None Include="res\Switchy_gray.ico">
       <Filter>Resource Files</Filter>
     </None>
   </ItemGroup>

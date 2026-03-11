@@ -71,12 +71,12 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="main.c" />
-    <ResourceCompile Include="Switchy.rc" />
+    <ClCompile Include="src\main.c" />
+    <ResourceCompile Include="res\Switchy.rc" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="Switchy.ico" />
-    <None Include="Switchy_gray.ico" />
+    <None Include="res\Switchy.ico" />
+    <None Include="res\Switchy_gray.ico" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />
