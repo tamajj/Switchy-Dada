@@ -31,7 +31,6 @@ typedef struct {
 #define ID_TRAY_SIZE_HUGE   1007
 #define ID_TRAY_RESTART 1008
 #define ID_TRAY_RUNATSTARTUP 1009
-#define ID_TRAY_OPEN_TASKSCHED 1010
 #define IDI_APPICON 1
 #define IDI_APPICON_DISABLED 2
 
@@ -67,6 +66,7 @@ BOOL letCapsKeyThrough = FALSE;  /* when Alt/Ctrl+Caps with Caps ON: let both do
 HWND g_hwndTray = NULL;
 HWND g_hwndOverlay = NULL;
 HANDLE g_hMutex = NULL;
+UINT WM_TASKBAR_CREATED = 0;
 
 Settings settings = {
 	.popup = FALSE,
@@ -99,6 +99,9 @@ int main(int argc, char** argv)
 		ShowError("Error calling \"SetWindowsHookEx(...)\"");
 		return 1;
 	}
+
+	/* Register TaskbarCreated so we can re-add the tray icon if Explorer restarts */
+	WM_TASKBAR_CREATED = RegisterWindowMessageA("TaskbarCreated");
 
 	/* Create hidden window for system tray icon */
 	WNDCLASSEXA wc = { 0 };
@@ -178,7 +181,6 @@ LRESULT CALLBACK TrayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			AppendMenuA(menu, MF_SEPARATOR, 0, NULL);
 			AppendMenuA(menu, MF_STRING, ID_TRAY_RESTART, "Restart");
 			AppendMenuA(menu, IsRunAtStartup() ? MF_CHECKED : MF_UNCHECKED, ID_TRAY_RUNATSTARTUP, "Run at startup");
-			AppendMenuA(menu, MF_STRING, ID_TRAY_OPEN_TASKSCHED, "Open Task Scheduler");
 			AppendMenuA(menu, MF_SEPARATOR, 0, NULL);
 			AppendMenuA(menu, MF_STRING, ID_TRAY_EXIT, "Exit");
 			SetForegroundWindow(hwnd);
@@ -231,9 +233,6 @@ LRESULT CALLBACK TrayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		case ID_TRAY_RUNATSTARTUP:
 			SetRunAtStartup(!IsRunAtStartup());
 			return 0;
-		case ID_TRAY_OPEN_TASKSCHED:
-			ShellExecuteA(NULL, "open", "taskschd.msc", NULL, NULL, SW_SHOWNORMAL);
-			return 0;
 		}
 	}
 	if (msg == WM_UPDATE_TRAY_ICON)
@@ -251,6 +250,12 @@ LRESULT CALLBACK TrayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 	if (msg == WM_DESTROY)
 	{
 		PostQuitMessage(0);
+		return 0;
+	}
+	/* Explorer restarted — re-add the tray icon */
+	if (WM_TASKBAR_CREATED && msg == WM_TASKBAR_CREATED)
+	{
+		AddTrayIcon(hwnd, GetModuleHandle(NULL), enabled);
 		return 0;
 	}
 	return DefWindowProcA(hwnd, msg, wParam, lParam);
@@ -333,78 +338,40 @@ void SaveOverlaySettings(void)
 	}
 }
 
-#define TASK_NAME "Switchy"
+#define RUN_REG_KEY "Software\\Microsoft\\Windows\\CurrentVersion\\Run"
+#define RUN_REG_VALUE "Switchy"
+
 BOOL IsRunAtStartup(void)
 {
-	/* Query Task Scheduler directly via schtasks /query */
-	char params[256];
-	sprintf_s(params, sizeof(params),
-		"/query /tn \"" TASK_NAME "\" /fo LIST");
-
-	STARTUPINFOA si = { sizeof(si) };
-	PROCESS_INFORMATION pi = { 0 };
-	si.dwFlags = STARTF_USESHOWWINDOW;
-	si.wShowWindow = SW_HIDE;
-
-	char cmdLine[512];
-	sprintf_s(cmdLine, sizeof(cmdLine), "schtasks.exe %s", params);
-
-	if (!CreateProcessA(NULL, cmdLine, NULL, NULL, FALSE,
-		CREATE_NO_WINDOW, NULL, NULL, &si, &pi))
+	HKEY hKey;
+	if (RegOpenKeyExA(HKEY_CURRENT_USER, RUN_REG_KEY, 0, KEY_READ, &hKey) != 0)
 		return FALSE;
-
-	WaitForSingleObject(pi.hProcess, 5000);
-	DWORD exitCode = 1;
-	GetExitCodeProcess(pi.hProcess, &exitCode);
-	CloseHandle(pi.hProcess);
-	CloseHandle(pi.hThread);
-
-	return (exitCode == 0);
+	BOOL exists = (RegQueryValueExA(hKey, RUN_REG_VALUE, NULL, NULL, NULL, NULL) == 0);
+	RegCloseKey(hKey);
+	return exists;
 }
 
 BOOL SetRunAtStartup(BOOL enable)
 {
-	char params[MAX_PATH + 384];
+	HKEY hKey;
+	if (RegOpenKeyExA(HKEY_CURRENT_USER, RUN_REG_KEY, 0, KEY_WRITE, &hKey) != 0)
+		return FALSE;
+	BOOL ok;
 	if (enable)
 	{
 		char exePath[MAX_PATH];
-		char username[256];
-		DWORD unameLen = (DWORD)(sizeof(username) / sizeof(username[0]));
+		char quoted[MAX_PATH + 3];
 		GetModuleFileNameA(NULL, exePath, MAX_PATH);
-		if (!GetUserNameA(username, &unameLen))
-			username[0] = '\0';
-		/* /ru = run as this user at logon, /rl limited = run without elevation
-		   /f = overwrite if exists */
-		if (username[0])
-			sprintf_s(params, sizeof(params),
-				"/create /tn \"" TASK_NAME "\" /tr \"\\\"%s\\\"\" /sc onlogon /ru \"%s\" /rl limited /f",
-				exePath, username);
-		else
-			sprintf_s(params, sizeof(params),
-				"/create /tn \"" TASK_NAME "\" /tr \"\\\"%s\\\"\" /sc onlogon /rl limited /f",
-				exePath);
+		sprintf_s(quoted, sizeof(quoted), "\"%s\"", exePath);
+		ok = (RegSetValueExA(hKey, RUN_REG_VALUE, 0, REG_SZ,
+			(const BYTE*)quoted, (DWORD)(strlen(quoted) + 1)) == 0);
 	}
 	else
 	{
-		sprintf_s(params, sizeof(params),
-			"/delete /tn \"" TASK_NAME "\" /f");
+		ok = (RegDeleteValueA(hKey, RUN_REG_VALUE) == 0);
 	}
-	/* "runas" verb elevates schtasks — one UAC prompt to set up, never again */
-	SHELLEXECUTEINFOA sei = { sizeof(sei) };
-	sei.lpVerb = "runas";
-	sei.lpFile = "schtasks.exe";
-	sei.lpParameters = params;
-	sei.nShow = SW_HIDE;
-	sei.fMask = SEE_MASK_NOCLOSEPROCESS;
-	if (!ShellExecuteExA(&sei) || !sei.hProcess)
-		return FALSE;
-
-	WaitForSingleObject(sei.hProcess, 10000);
-	DWORD exitCode = 1;
-	GetExitCodeProcess(sei.hProcess, &exitCode);
-	CloseHandle(sei.hProcess);
-
-	return (exitCode == 0);
+	RegCloseKey(hKey);
+	return ok;
 }
 
 void RestartApplication(void)
